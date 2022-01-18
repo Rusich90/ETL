@@ -19,17 +19,20 @@ def load_data() -> None:
     """
     try:
         while True:
-            """
-            Берем актуальную дату апдейта из файла состояний, если нету даты, берем дату из конфигурации
-            """
             storage = Storage(settings.pg_conf.state_file_path)
             state = State(storage)
+
+            pg_loader = PostgresLoader()
+            movies_ids = set()
+            states = {}
 
             """
             Проходим по каждой таблицы из списка таблиц в конфиге
             """
             for table in settings.pg_conf.tables:
-                pg_loader = PostgresLoader()
+                """
+                Берем актуальную дату апдейта из файла состояний, если нету даты, берем дату из конфигурации
+                """
                 date = state.get_state(table) if state.get_state(table) else settings.pg_conf.default_date
 
                 """
@@ -40,18 +43,17 @@ def load_data() -> None:
                     logger.info(f'No updates for {table} table')
                     continue
                 """
-                Запоминаем дату апдейта последней записи в списке
+                Запоминаем дату апдейта последней записи в списке в словарь с таблицами и датами
                 """
-                last_update_date = str(records_for_update[-1]['updated_at'])
+                states[table] = str(records_for_update[-1]['updated_at'])
                 ids_list = tuple([record['id'] for record in records_for_update])
 
                 if table == 'film_work':
                     """
                     Если проверяем таблицу с фильмами - то запрос к вспомогательной таблице не делаем
                     """
-                    movies = pg_loader.load_movies(ids_list)
-                    json_list = parse_to_elastic(movies)
-                    request_to_elastic(json_list)
+                    movies_ids.update(ids_list)
+
                 else:
                     """
                     Запрос к вспомогательной таблице и запоминание оффсета для запроса пачками (зависит от query_limit)
@@ -61,25 +63,35 @@ def load_data() -> None:
                         movies_for_update = pg_loader.load_movies_ids(table, ids_list, offset)
                         if not movies_for_update:
                             break
-                        movies_ids = tuple([movie['id'] for movie in movies_for_update])
-
-                        movies = pg_loader.load_movies(movies_ids)
-                        json_list = parse_to_elastic(movies)
-                        request_to_elastic(json_list)
-
+                        ids = [movie['id'] for movie in movies_for_update]
+                        movies_ids.update(ids)
                         offset += pg_loader.limit
 
+            if movies_ids:
                 """
-                Устонавливаем дату в состояние после успешного запроса к эластику
+                Основной запрос к таблице с фильмами (тоже с оффсетом для запроса пачками)
                 """
-                state.set_state(table, last_update_date)
+                offset = 0
+                while True:
+                    movies = pg_loader.load_movies(tuple(movies_ids), offset)
+                    if not movies:
+                        break
+                    json_list = parse_to_elastic(movies)
+                    request_to_elastic(json_list)
+                    offset += pg_loader.limit
+
+                """
+                Устанавливаем даты для каждой таблицы в состояние после успешного запроса к эластику
+                """
+                for key, value in states.items():
+                    state.set_state(key, value)
 
             pg_loader.close()
             time.sleep(5)
     except KeyboardInterrupt:
         logger.info("ETL process finished!")
-    except:
-        logger.error("Something goes wrong!")
+    except Exception as error:
+        logger.error(f"Something goes wrong! Error - {error}")
     finally:
         pg_loader.close()
         logger.info('Connection with DB closed!')

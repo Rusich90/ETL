@@ -30,9 +30,10 @@ def backoff(start_sleep_time=0.1, factor=2, border_sleep_time=10):
                 t = t * factor if t < border_sleep_time else border_sleep_time
                 try:
                     return func(*args, **kwargs)
-                except:
+                except Exception as error:
                     logger.error(f'No connection with service "{func.__name__}"')
                     logger.error('Try to new connect...')
+                    logger.error(error)
                     time.sleep(t)
         return inner
     return func_wrapper
@@ -90,7 +91,7 @@ def request_to_elastic(json_list: str) -> None:
     url = settings.es_url
     headers = {'content-type': 'application/x-ndjson'}
     response = requests.post(url, data=json_list, headers=headers)
-    if response.status_code == 200:
+    if response.ok:
         logger.info(f'Successful update in elastic')
     else:
         logger.error(f'Something wrong with elastic: status - "{response.status_code}" response - {response.json()}')
